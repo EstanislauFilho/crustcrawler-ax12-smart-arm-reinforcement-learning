@@ -14,13 +14,10 @@ import roboticstoolbox as rtb
 
 from libraries import utils
 
-
 MIN_DISTANCE_TARGET = 0.01
 MIN_ANGULAR_TARGET = 0.03490658503989
 
 MIN_ACHIEVED_GOAL = 1
-
-MIN_EFFECTOR_HEIGHT = 0.0255
 
 pose_alvo = utils.ler_arquivo_pose("./input/pose.txt")
 
@@ -59,7 +56,7 @@ class CrustCrawlerEnv(gym.Env):
         Ls.append(rtb.RevoluteDH(a=0.020, 
                                  alpha=np.pi/2,  
                                  d=0,     
-                                 offset=-np.pi/2+np.pi/6, # deslocamento de 30º
+                                 offset=-np.pi/2+np.pi/6,
                                  qlim=np.deg2rad(list(link_configs['forearm']))))
         
         Ls.append(rtb.RevoluteDH(a=0.0, 
@@ -68,11 +65,8 @@ class CrustCrawlerEnv(gym.Env):
                                  offset=0,        
                                  qlim=np.deg2rad(list(link_configs['wrist']))))
 
-        # Definir a base do robô (posição e orientação)
-        base = sm.SE3(0, 0, 0.02) * sm.SE3.Rz(0)  # Base deslocada para (1, 2, 3) e rotacionada em pi/4 ao redor de Z
 
-        # Criação do robô
-        self.robot = rtb.DHRobot(Ls, name="CrustCrawler", base=base)
+        self.robot = rtb.DHRobot(Ls, name="CrustCrawler")
         self.env.add(self.robot)
 
         self.target_object_1, self.target_position_1, \
@@ -91,7 +85,6 @@ class CrustCrawlerEnv(gym.Env):
                                        np.array([-np.pi, -np.pi, -np.pi]),
                                        np.array([-np.pi, -np.pi, -np.pi]),
                                        np.array([0.0]),
-                                       np.array([0.0]),
                                        np.array([0.0])))
         
         self.obs_high = np.concatenate((self.robot.qlim[1], 
@@ -102,10 +95,9 @@ class CrustCrawlerEnv(gym.Env):
                                         np.array([+np.pi, +np.pi, +np.pi]),
                                         np.array([+np.pi, +np.pi, +np.pi]),
                                         np.array([2.0]),
-                                        np.array([3.0 * +np.pi]),
-                                        np.array([1.0])))
+                                        np.array([3.0 * +np.pi])))
         
-        self.observation_space = spaces.Box(low=self.obs_low, high=self.obs_high, shape=(25,), dtype=np.float64)
+        self.observation_space = spaces.Box(low=self.obs_low, high=self.obs_high, shape=(24,), dtype=np.float64)
         
         self.action_space = spaces.Discrete(3)
 
@@ -114,7 +106,7 @@ class CrustCrawlerEnv(gym.Env):
         self.orientations_list = []
 
         self.episode = 0
-        self.previous_fitness = None
+        self.previous_reward = None
 
 
     def reset(self):
@@ -122,7 +114,6 @@ class CrustCrawlerEnv(gym.Env):
         self.current_step = 0
         self.count_achieved_goal = 0
 
-        self.collided = False
         self.target_achieved = False
         
         self.distances_list.clear()
@@ -179,37 +170,30 @@ class CrustCrawlerEnv(gym.Env):
 
 
     def _compute_reward(self):
-        """ A função de recompensa adaptada do artigo, levando em consideração a 
-            fitness de posição e orientação. 
+        """ A função de recompensa leva em consideração a 
+             de posição e orientação. 
         """
         done = False
-        collision = False
-        collision_reward = 0.0
-        completion_reward = 0.0
 
-        pose_error, orientation_error = self._get_final_pose_by_forward_kinematics()
-        collision = self._check_collision()
+        position_error, orientation_error = \
+            self._get_final_pose_by_forward_kinematics()
         
         # Fitness atual (com base no erro de posição e orientação)
-        position_fitness = np.linalg.norm(pose_error)
-        orientation_fitness = np.linalg.norm(orientation_error[0])
+        position_reward = np.linalg.norm(position_error)
+        orientation_reward = np.linalg.norm(orientation_error[0])
 
-        self.distances_list.append(position_fitness)
-        self.orientations_list.append(orientation_fitness)
-
-        effector_position = self._get_current_effector_position()
-        if effector_position[-1] < MIN_EFFECTOR_HEIGHT:
-            collision =  True
+        self.distances_list.append(position_reward)
+        self.orientations_list.append(orientation_reward)
 
         # Calcula os pesos para o controle de posição
         position_weight = 0.90
         orientation_weight = 0.10
 
         # Calcula a fitness total ponderando os erros de posição e orientação
-        total_fitness = (position_fitness * position_weight) + (orientation_fitness * orientation_weight)
+        total_reward = (position_reward * position_weight) + (orientation_reward * orientation_weight)
 
         # Caso o alvo seja atingido (dentro de um limite de erro aceitável)
-        if position_fitness <= MIN_DISTANCE_TARGET and orientation_fitness <= MIN_ANGULAR_TARGET and collision is False:
+        if position_reward <= MIN_DISTANCE_TARGET and orientation_reward <= MIN_ANGULAR_TARGET:
             self.count_achieved_goal += 1
             self.target_achieved = True
         else:
@@ -220,23 +204,17 @@ class CrustCrawlerEnv(gym.Env):
             done = True
 
         # Verifica se é a primeira iteração (não tem fitness anterior)
-        if self.previous_fitness is None:
-            self.previous_fitness = total_fitness
+        if self.previous_reward is None:
+            self.previous_reward = total_reward
         
         # Função de recompensa baseada na diferença de fitness 
-        fitness_difference = self.previous_fitness - total_fitness 
-        reward = 100 * (2 / (1 + np.exp(-10 * (fitness_difference / MIN_DISTANCE_TARGET))) - 1)
+        fitness_difference = self.previous_reward - total_reward 
+        
+        reward = M * (2 * (1 / (1 + np.exp(-((fitness_difference / MIN_DISTANCE_TARGET) * 10)))) - 1)
 
-        # Se colidiu, penalidade
-        if collision:
-            self.collided = True 
-        else:
-            self.collided = False
-
-        reward += (completion_reward + collision_reward)
 
         # Atualiza a fitness anterior para a próxima iteração
-        self.previous_fitness = total_fitness
+        self.previous_reward = total_reward
 
         return reward, done
 
@@ -277,7 +255,7 @@ class CrustCrawlerEnv(gym.Env):
         Ry = sm.SE3.Ry(pose_alvo['ry']) 
         Rz = sm.SE3.Rz(pose_alvo['rz'])
         
-        target_object = Tx * Ty * Tz * Rx * Ry * Rz
+        target_object = Tx * Ty * Tz * Rz * Ry * Rx
         target_position = target_object.t
 
         target_orientation = sm.base.tr2rpy(target_object.R, unit="rad")
@@ -301,8 +279,7 @@ class CrustCrawlerEnv(gym.Env):
 
         distance_difference = np.linalg.norm(diff_pose)
         orientation_difference = np.linalg.norm(diff_orie)
-        collision = 1 if self.collided else 0
-        
+
         return np.concatenate((self.robot.q[:4], 
                                effector_pose.t, 
                                self.target_position, 
@@ -311,19 +288,9 @@ class CrustCrawlerEnv(gym.Env):
                                self.target_orientation,
                                diff_orie,
                                [distance_difference],
-                               [orientation_difference], 
-                               [collision]))
+                               [orientation_difference]))
 
     def _reset_robot_position(self):
         self.robot.q = [2.4609141, 1.8762289, 2.4870942, 2.6179938]	
         self.robot.q += 0.05 * np.random.uniform(-1, 1, 4)
     
-    # Função para desenhar uma esfera
-    def draw_sphere(self, ax, position, radius=0.01, color='red'):
-        u = np.linspace(0, 2 * np.pi, 100)
-        v = np.linspace(0, np.pi, 100)
-        x = radius * np.outer(np.cos(u), np.sin(v)) + position[0]
-        y = radius * np.outer(np.sin(u), np.sin(v)) + position[1]
-        z = radius * np.outer(np.ones(np.size(u)), np.cos(v)) + position[2]
-
-        ax.plot_surface(x, y, z, color=color, alpha=0.7)
