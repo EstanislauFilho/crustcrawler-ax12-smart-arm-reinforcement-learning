@@ -19,7 +19,8 @@ MIN_ANGULAR_TARGET = 0.03490658503989
 
 MIN_ACHIEVED_GOAL = 1
 
-M = 250
+M = 300
+k = 1
 
 pose_alvo = utils.ler_arquivo_pose("./input/pose.txt")
 
@@ -212,7 +213,7 @@ class CrustCrawlerEnv(gym.Env):
         # Função de recompensa baseada na diferença de fitness 
         fitness_difference = self.previous_reward - total_reward 
         
-        reward = M * (2 * (1 / (1 + np.exp(-((fitness_difference / MIN_DISTANCE_TARGET) * 10)))) - 1)
+        reward = M * (2 * (1 / (1 + np.exp(-((fitness_difference / MIN_DISTANCE_TARGET) * K)))) - 1)
 
         # Atualiza a fitness anterior para a próxima iteração
         self.previous_reward = reward
